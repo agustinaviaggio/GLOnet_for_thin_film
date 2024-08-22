@@ -52,6 +52,7 @@ class GLOnet():
         self.loss_training = []
         self.refractive_indices_training = []
         self.thicknesses_training = []
+        self.FM_training = []
         
     def to_cuda_if_available(self, tensor):
         if torch.cuda.is_available():
@@ -140,9 +141,11 @@ class GLOnet():
                 sensor_signal = self.sensor_signal(self.k, reflection_empty, reflection_full) if self.sensor else None
                 
                 g_loss = self.global_loss_function(sensor_signal) if self.sensor else self.global_loss_function(reflection)
-                                
+
+                FM = torch.pow(sensor_signal - 1, 2) if self.sensor else torch.pow(reflection - self.target_reflection, 2)
+
                 # record history
-                self.record_history(it, g_loss, thicknesses, refractive_indices) if not self.sensor else self.record_history(it, g_loss, thicknesses, refractive_indices_empty)
+                self.record_history(it, g_loss, thicknesses, refractive_indices, FM) if not self.sensor else self.record_history(it, g_loss, thicknesses, refractive_indices_empty, FM)
                 
                 # train the generator
                 g_loss.backward()
@@ -262,11 +265,12 @@ class GLOnet():
         dmdt = torch.autograd.grad(metric.mean(), thicknesses, create_graph=True)
         return -torch.mean(torch.exp((-metric - self.robust_coeff *torch.mean(torch.abs(dmdt[0]), dim=1))/self.sigma))
 
-    def record_history(self, it, loss, thicknesses, refractive_indices):
+    def record_history(self, it, loss, thicknesses, refractive_indices, FM):
         self.loss_training.append(loss.detach().numpy())
         if it == self.numIter:
             self.thicknesses_training.append(thicknesses.detach().numpy())
             self.refractive_indices_training.append(refractive_indices.detach().numpy())
+            self.FM_training.append(FM.detach().numpy())
         
     def viz_training(self):
         plt.figure(figsize = (20, 5))
@@ -280,4 +284,5 @@ class GLOnet():
         np.savez(str(self.ruta)+'/seed_'+str(self.seed)+'/loss', self.loss_training)
         np.savez(str(self.ruta)+'/seed_'+str(self.seed)+'/thicknesses', self.thicknesses_training)
         np.savez(str(self.ruta)+'/seed_'+str(self.seed)+'/ref_idxs', self.refractive_indices_training)
+        np.savez(str(self.ruta)+'/seed_'+str(self.seed)+'/FM', self.FM_training)
         
