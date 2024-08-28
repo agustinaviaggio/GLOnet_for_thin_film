@@ -15,7 +15,7 @@ def transfer_matrix_layer(thickness, refractive_index, k, ky, pol):
     '''
     kx = torch.sqrt(torch.pow(k * refractive_index, 2)  - torch.pow(ky, 2))
 
-    TEpol = -torch.pow(refractive_index, 2)
+    TEpol = -torch.pow(refractive_index, 2)  #chequear
     TMpol = torch.ones_like(TEpol)
 
     if pol == 'TM':
@@ -29,9 +29,9 @@ def transfer_matrix_layer(thickness, refractive_index, k, ky, pol):
 
     T11 = torch.cos(kx * thickness)*pol_dim
 
-    T12 = torch.sin(kx * thickness) * k / kx * pol_multiplier*1j
+    T12 = - torch.sin(kx * thickness) * k / kx * pol_multiplier * 1j
     
-    T21 = torch.sin(kx * thickness) * kx / k / pol_multiplier*1j
+    T21 = - torch.sin(kx * thickness) * kx / k * pol_multiplier * 1j
     
     T22 = torch.cos(kx * thickness)*pol_dim
     
@@ -106,10 +106,10 @@ def amp2field(refractive_index, k, ky, pol = 'TM'):
     T12 = torch.ones_like(kx)*pol_dim
     T12 = T12.to(torch.complex64)
 
-    T21 = -kx / k / pol_multiplier
+    T21 = kx / k / pol_multiplier
     T21 = T21.to(torch.complex64)
 
-    T22 = kx / k / pol_multiplier
+    T22 = -kx / k / pol_multiplier
     T22 = T22.to(torch.complex64)
 
     numfreq = kx.size(1)
@@ -157,7 +157,7 @@ def TMM_solver(thicknesses, refractive_indices, n_bot, n_top, k, theta, pol = 'T
     S_stack = torch.matmul(torch.inverse(A2F_top), torch.matmul(T_stack, A2F_bot))
     
     # reflection 
-    Reflection = torch.pow(torch.abs(S_stack[:,:,:,:,1,0]), 2) / torch.pow(torch.abs(S_stack[:,:,:,:,1,1]), 2)
+    Reflection = torch.pow(torch.abs(S_stack[:,:,:,:,0,1]), 2) / torch.pow(torch.abs(S_stack[:,:,:,:,0,0]), 2)
     Reflection = Reflection.double()
             
     return Reflection
