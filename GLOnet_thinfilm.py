@@ -175,9 +175,9 @@ class GLOnet():
                 if self.user_define:
                     ref_idx_empty, ref_idx_full = refractive_indices_empty, refractive_indices_full
                 else:
-                    n_database_empty = self.to_cuda_if_available(self.matdatabase_empty.interp_wv(2 * math.pi/kvector, self.materials_empty, True).unsqueeze(0).unsqueeze(0))
+                    n_database_empty = self.to_cuda_if_available(self.matdatabase_empty.interp_wv(2 * math.pi/kvector, self.materials_empty, False).unsqueeze(0).unsqueeze(0))
                     ref_idx_empty = torch.sum(P.unsqueeze(-1) * n_database_empty, dim=2)
-                    n_database_full = self.to_cuda_if_available(self.matdatabase_full.interp_wv(2 * math.pi/kvector, self.materials_full, True).unsqueeze(0).unsqueeze(0))
+                    n_database_full = self.to_cuda_if_available(self.matdatabase_full.interp_wv(2 * math.pi/kvector, self.materials_full, False).unsqueeze(0).unsqueeze(0))
                     ref_idx_full = torch.sum(P.unsqueeze(-1) * n_database_full, dim=2)
             
             reflection_empty = TMM_solver(thicknesses, ref_idx_empty, self.n_bot, self.n_top, self.to_cuda_if_available(kvector), self.to_cuda_if_available(inc_angles), pol)
@@ -194,7 +194,7 @@ class GLOnet():
                 if self.user_define:
                     n_database = self.n_database # do not support dispersion
                 else:
-                    n_database = self.matdatabase.interp_wv(2 * math.pi/kvector, self.materials, True).unsqueeze(0).unsqueeze(0).type(self.dtype)
+                    n_database = self.matdatabase.interp_wv(2 * math.pi/kvector, self.materials, False).unsqueeze(0).unsqueeze(0).type(self.dtype)
             
                 one_hot = torch.eye(len(self.materials)).type(self.dtype)
                 ref_idx = torch.sum(one_hot[result_mat].unsqueeze(-1) * n_database, dim=2)
@@ -202,7 +202,7 @@ class GLOnet():
                 if self.user_define:
                     ref_idx = refractive_indices
                 else:
-                    n_database = self.matdatabase.interp_wv(2 * math.pi/kvector, self.materials, True).unsqueeze(0).unsqueeze(0).type(self.dtype)
+                    n_database = self.matdatabase.interp_wv(2 * math.pi/kvector, self.materials, False).unsqueeze(0).unsqueeze(0).type(self.dtype)
                     ref_idx = torch.sum(P.unsqueeze(-1) * n_database, dim=2)
 
             reflection = TMM_solver(thicknesses, ref_idx, self.n_bot, self.n_top, kvector.type(self.dtype), inc_angles.type(self.dtype), pol)
@@ -213,8 +213,8 @@ class GLOnet():
             n_database_empty = self.to_cuda_if_available(self.n_database_empty) # do not support dispersion
             n_database_full = self.to_cuda_if_available(self.n_database_full) # do not support dispersion
         else:
-            n_database_empty = self.to_cuda_if_available(self.matdatabase_empty.interp_wv(2 * math.pi / kvector, self.materials_empty, True).unsqueeze(0).unsqueeze(0))
-            n_database_full = self.to_cuda_if_available(self.matdatabase_full.interp_wv(2 * math.pi / kvector, self.materials_full, True).unsqueeze(0).unsqueeze(0))
+            n_database_empty = self.to_cuda_if_available(self.matdatabase_empty.interp_wv(2 * math.pi / kvector, self.materials_empty, False).unsqueeze(0).unsqueeze(0))
+            n_database_full = self.to_cuda_if_available(self.matdatabase_full.interp_wv(2 * math.pi / kvector, self.materials_full, False).unsqueeze(0).unsqueeze(0))
         
         one_hot = self.to_cuda_if_available(torch.eye(len(self.materials_empty)))
         one_hot_mat = one_hot[result_mat].unsqueeze(-1)
@@ -223,17 +223,34 @@ class GLOnet():
         return ref_idx_empty, ref_idx_full
     
     def _TMM_solver(self, thicknesses, result_mat, kvector = None, inc_angles = None, pol = None):
-        if kvector is None:
-            kvector = self.k
-        if inc_angles is None:
-            inc_angles = self.theta
-        if pol is None:
-            pol = self.pol  
-        n_database = self.matdatabase.interp_wv(2 * math.pi/kvector, self.materials, True).unsqueeze(0).unsqueeze(0).type(self.dtype)
-        one_hot = torch.eye(len(self.materials)).type(self.dtype)
-        ref_idx = torch.sum(one_hot[result_mat].unsqueeze(-1) * n_database, dim=2)
-        reflection = TMM_solver(thicknesses, ref_idx, self.n_bot, self.n_top, kvector.type(self.dtype), inc_angles.type(self.dtype), pol)
-        return reflection
+        if self.sensor:
+            if kvector is None:
+                kvector = self.k
+            if inc_angles is None:
+                inc_angles = self.theta
+            if pol is None:
+                pol = self.pol  
+            n_database_empty = self.matdatabase_empty.interp_wv(2 * math.pi/kvector, self.materials_empty, False).unsqueeze(0).unsqueeze(0)
+            n_database_full = self.matdatabase_full.interp_wv(2 * math.pi/kvector, self.materials_full, False).unsqueeze(0).unsqueeze(0)
+            one_hot = torch.eye(len(self.materials_empty))
+            one_hot_mat = one_hot[result_mat].unsqueeze(-1)
+            ref_idx_empty = torch.sum(one_hot_mat * n_database_empty, dim=2)
+            ref_idx_full = torch.sum(one_hot_mat * n_database_full, dim=2)
+            reflection_e = TMM_solver(thicknesses, ref_idx_empty, self.n_bot, self.n_top, kvector, inc_angles, pol)
+            reflection_f = TMM_solver(thicknesses, ref_idx_full, self.n_bot, self.n_top, kvector, inc_angles, pol)
+            return reflection_e, reflection_f
+        else:
+            if kvector is None:
+                kvector = self.k
+            if inc_angles is None:
+                inc_angles = self.theta
+            if pol is None:
+                pol = self.pol  
+            n_database = self.matdatabase.interp_wv(2 * math.pi/kvector, self.materials, False).unsqueeze(0).unsqueeze(0)
+            one_hot = torch.eye(len(self.materials)).type(self.dtype)
+            ref_idx = torch.sum(one_hot[result_mat].unsqueeze(-1) * n_database, dim=2)
+            reflection = TMM_solver(thicknesses, ref_idx, self.n_bot, self.n_top, kvector.type(self.dtype), inc_angles, pol)
+            return reflection            
         
     def update_alpha(self, normIter):
         self.alpha = round(normIter/0.05) * self.alpha_sup + 1.
