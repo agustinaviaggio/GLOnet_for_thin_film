@@ -74,21 +74,24 @@ class GLOnet():
     def _init_scheduler(self, params):
         return torch.optim.lr_scheduler.StepLR(self.optimizer, 
                                             step_size=params.step_size, 
-                                            gamma=params.step_size)   
+                                            gamma=params.gamma)   
 
     def _init_simulation_parameters(self, params):
         if params.user_define:
             if self.sensor:
                 self.n_database_empty = self.to_cuda_if_available(params.n_database_empty)
-                self.n_database_full = self.to_cuda_if_available(params.n_database_full)
+                self.n_database_full_A = self.to_cuda_if_available(params.n_database_full_A)
+                self.n_database_full_B = self.to_cuda_if_available(params.n_database_full_B)
             else:
                 self.n_database = self.to_cuda_if_available(params.n_database)
         else:
             if self.sensor:
                 self.materials_empty = self.to_cuda_if_available(params.materials_empty)
                 self.matdatabase_empty = self.to_cuda_if_available(params.matdatabase_empty)
-                self.materials_full = self.to_cuda_if_available(params.materials_full)
-                self.matdatabase_full = self.to_cuda_if_available(params.matdatabase_full)
+                self.materials_full_A = self.to_cuda_if_available(params.materials_full_A)
+                self.matdatabase_full_A = self.to_cuda_if_available(params.matdatabase_full_A)
+                self.materials_full_B = self.to_cuda_if_available(params.materials_full_B)
+                self.matdatabase_full_B = self.to_cuda_if_available(params.matdatabase_full_B)               
             else:
                 self.matdatabase = self.to_cuda_if_available(params.matdatabase)
                 self.materials = self.to_cuda_if_available(params.materials)
@@ -105,7 +108,8 @@ class GLOnet():
             
         # training loop
         with tqdm(total=self.numIter) as t:
-            it = self.iter0  
+            it = self.iter0
+            final_loss = None 
             while True:
                 it +=1 
 
@@ -117,20 +121,24 @@ class GLOnet():
                 
                 # terminate the loop
                 if it > self.numIter:
-                    return 
+                    break 
 
                 # sample z
                 z = self.sample_z(self.batch_size)
                 
                 # generate a batch of images
                 if self.sensor:
-                    thicknesses, refractive_indices_empty, refractive_indices_full, _ = self.generator(z, self.alpha)
+                    thicknesses, refractive_indices_empty, refractive_indices_full_A, refractive_indices_full_B, _ = self.generator(z, self.alpha)
+                    #print(refractive_indices_full_A)
+                    #print(refractive_indices_full_B)
+                    #print(refractive_indices_full_B.shape)
                 else:
                     thicknesses, refractive_indices, _ = self.generator(z, self.alpha)
                 # calculate efficiencies and gradients using EM solver
                 if self.sensor:
                     reflection_empty = TMM_solver(thicknesses, refractive_indices_empty, self.n_bot, self.n_top, self.k, self.theta, self.pol)
-                    reflection_full = TMM_solver(thicknesses, refractive_indices_full, self.n_bot, self.n_top, self.k, self.theta, self.pol)
+                    reflection_full_A = TMM_solver(thicknesses, refractive_indices_full_A, self.n_bot, self.n_top, self.k, self.theta, self.pol)
+                    reflection_full_B = TMM_solver(thicknesses, refractive_indices_full_B, self.n_bot, self.n_top, self.k, self.theta, self.pol)
                 else:
                     reflection = TMM_solver(thicknesses, refractive_indices, self.n_bot, self.n_top, self.k, self.theta, self.pol) 
                 
@@ -138,12 +146,11 @@ class GLOnet():
                 self.optimizer.zero_grad()
 
                 # construct the loss 
-                sensor_signal = self.sensor_signal(self.k, reflection_empty, reflection_full) if self.sensor else None
+                sensor_signal = self.sensor_signal_2(self.k, reflection_empty, reflection_full_A, reflection_full_B) if self.sensor else None
                 
                 g_loss = self.global_loss_function(sensor_signal) if self.sensor else self.global_loss_function(reflection)
 
-                FM = torch.pow(sensor_signal - 1, 2) if self.sensor else torch.pow(reflection - self.target_reflection, 2)
-
+                FM = torch.pow(sensor_signal - 0.25, 2) if self.sensor else torch.pow(reflection - self.target_reflection, 2)
                 # record history
                 self.record_history(it, g_loss, thicknesses, refractive_indices, FM) if not self.sensor else self.record_history(it, g_loss, thicknesses, refractive_indices_empty, FM)
                 
@@ -154,6 +161,8 @@ class GLOnet():
                 
                 # update progress bar
                 t.update()
+                final_loss = g_loss.item() 
+        return final_loss
     
     def evaluate(self, num_devices, kvector = None, inc_angles = None, pol = None, grayscale=True):
         if kvector is None:
@@ -166,26 +175,29 @@ class GLOnet():
         self.generator.eval()
         z = self.sample_z(num_devices)
         if self.sensor:
-            thicknesses, refractive_indices_empty, refractive_indices_full, P = self.generator(z, self.alpha)
+            thicknesses, refractive_indices_empty, refractive_indices_full_A, refractive_indices_full_B, P = self.generator(z, self.alpha)
             result_mat = torch.argmax(P, dim=2).detach() # batch size x number of layer
 
             if not grayscale:
-                ref_idx_empty, ref_idx_full = self._calculate_refractive_indices(kvector)
+                ref_idx_empty, ref_idx_full_A, ref_idx_full_B = self._calculate_refractive_indices(kvector)
             else:
                 if self.user_define:
-                    ref_idx_empty, ref_idx_full = refractive_indices_empty, refractive_indices_full
+                    ref_idx_empty, ref_idx_full_A, ref_idx_full_B = refractive_indices_empty, refractive_indices_full_A, refractive_indices_full_B
                 else:
                     n_database_empty = self.to_cuda_if_available(self.matdatabase_empty.interp_wv(2 * math.pi/kvector, self.materials_empty, False).unsqueeze(0).unsqueeze(0))
                     ref_idx_empty = torch.sum(P.unsqueeze(-1) * n_database_empty, dim=2)
-                    n_database_full = self.to_cuda_if_available(self.matdatabase_full.interp_wv(2 * math.pi/kvector, self.materials_full, False).unsqueeze(0).unsqueeze(0))
-                    ref_idx_full = torch.sum(P.unsqueeze(-1) * n_database_full, dim=2)
+                    n_database_full_A = self.to_cuda_if_available(self.matdatabase_full_A.interp_wv(2 * math.pi/kvector, self.materials_full_A, False).unsqueeze(0).unsqueeze(0))
+                    ref_idx_full_A = torch.sum(P.unsqueeze(-1) * n_database_full_A, dim=2)
+                    n_database_full_B = self.to_cuda_if_available(self.matdatabase_full_B.interp_wv(2 * math.pi/kvector, self.materials_full_B, False).unsqueeze(0).unsqueeze(0))
+                    ref_idx_full_B = torch.sum(P.unsqueeze(-1) * n_database_full_B, dim=2)
             
             reflection_empty = TMM_solver(thicknesses, ref_idx_empty, self.n_bot, self.n_top, self.to_cuda_if_available(kvector), self.to_cuda_if_available(inc_angles), pol)
-            reflection_full = TMM_solver(thicknesses, ref_idx_full, self.n_bot, self.n_top, self.to_cuda_if_available(kvector), self.to_cuda_if_available(inc_angles), pol)
+            reflection_full_A = TMM_solver(thicknesses, ref_idx_full_A, self.n_bot, self.n_top, self.to_cuda_if_available(kvector), self.to_cuda_if_available(inc_angles), pol)
+            reflection_full_B = TMM_solver(thicknesses, ref_idx_full_B, self.n_bot, self.n_top, self.to_cuda_if_available(kvector), self.to_cuda_if_available(inc_angles), pol)
             
-            sensor_signal = self.sensor_signal(self.to_cuda_if_available(kvector), reflection_empty, reflection_full)
+            sensor_signal = self.sensor_signal_2(self.to_cuda_if_available(kvector), reflection_empty, reflection_full_A, reflection_full_B)
             
-            return thicknesses, result_mat, sensor_signal, ref_idx_empty, reflection_empty, ref_idx_full, reflection_full
+            return thicknesses, result_mat, sensor_signal, ref_idx_empty, reflection_empty, ref_idx_full_A, reflection_full_A, ref_idx_full_B, reflection_full_B
         
         else:
             thicknesses, refractive_indices, P = self.generator(z, self.alpha)
@@ -214,13 +226,14 @@ class GLOnet():
             n_database_full = self.to_cuda_if_available(self.n_database_full) # do not support dispersion
         else:
             n_database_empty = self.to_cuda_if_available(self.matdatabase_empty.interp_wv(2 * math.pi / kvector, self.materials_empty, False).unsqueeze(0).unsqueeze(0))
-            n_database_full = self.to_cuda_if_available(self.matdatabase_full.interp_wv(2 * math.pi / kvector, self.materials_full, False).unsqueeze(0).unsqueeze(0))
-        
+            n_database_full_A = self.to_cuda_if_available(self.matdatabase_full_A.interp_wv(2 * math.pi / kvector, self.materials_full_A, False).unsqueeze(0).unsqueeze(0))
+            n_database_full_B = self.to_cuda_if_available(self.matdatabase_full_B.interp_wv(2 * math.pi / kvector, self.materials_full_B, False).unsqueeze(0).unsqueeze(0))
         one_hot = self.to_cuda_if_available(torch.eye(len(self.materials_empty)))
         one_hot_mat = one_hot[result_mat].unsqueeze(-1)
         ref_idx_empty = torch.sum(one_hot_mat * n_database_empty, dim=2)
-        ref_idx_full = torch.sum(one_hot_mat * n_database_full, dim=2)
-        return ref_idx_empty, ref_idx_full
+        ref_idx_full_A = torch.sum(one_hot_mat * n_database_full_A, dim=2)
+        ref_idx_full_B = torch.sum(one_hot_mat * n_database_full_B, dim=2)
+        return ref_idx_empty, ref_idx_full_A, ref_idx_full_B
     
     def _TMM_solver(self, thicknesses, result_mat, kvector = None, inc_angles = None, pol = None):
         if self.sensor:
@@ -231,14 +244,17 @@ class GLOnet():
             if pol is None:
                 pol = self.pol  
             n_database_empty = self.matdatabase_empty.interp_wv(2 * math.pi/kvector, self.materials_empty, False).unsqueeze(0).unsqueeze(0)
-            n_database_full = self.matdatabase_full.interp_wv(2 * math.pi/kvector, self.materials_full, False).unsqueeze(0).unsqueeze(0)
+            n_database_full_A = self.matdatabase_full.interp_wv(2 * math.pi/kvector, self.materials_full_A, False).unsqueeze(0).unsqueeze(0)
+            n_database_full_B = self.matdatabase_full.interp_wv(2 * math.pi/kvector, self.materials_full_B, False).unsqueeze(0).unsqueeze(0)
             one_hot = torch.eye(len(self.materials_empty))
             one_hot_mat = one_hot[result_mat].unsqueeze(-1)
             ref_idx_empty = torch.sum(one_hot_mat * n_database_empty, dim=2)
-            ref_idx_full = torch.sum(one_hot_mat * n_database_full, dim=2)
+            ref_idx_full_A = torch.sum(one_hot_mat * n_database_full_A, dim=2)
+            ref_idx_full_B = torch.sum(one_hot_mat * n_database_full_B, dim=2)
             reflection_e = TMM_solver(thicknesses, ref_idx_empty, self.n_bot, self.n_top, kvector, inc_angles, pol)
-            reflection_f = TMM_solver(thicknesses, ref_idx_full, self.n_bot, self.n_top, kvector, inc_angles, pol)
-            return reflection_e, reflection_f
+            reflection_f_A = TMM_solver(thicknesses, ref_idx_full_A, self.n_bot, self.n_top, kvector, inc_angles, pol)
+            reflection_f_B = TMM_solver(thicknesses, ref_idx_full_B, self.n_bot, self.n_top, kvector, inc_angles, pol)
+            return reflection_e, reflection_f_A, reflection_f_B
         else:
             if kvector is None:
                 kvector = self.k
@@ -262,7 +278,7 @@ class GLOnet():
         lambdas = 2*math.pi/self.k
         return torch.trapz(spectra, lambdas, dim= dim)
     
-    def sensor_signal(self, k, reflection_empty, reflection_full):
+    def sensor_signal_1(self, k, reflection_empty, reflection_full):
         lambdas = 2 * math.pi / self.k
         led_x_ldr = self.to_cuda_if_available(torch.from_numpy(self.led_spline(lambdas) * self.ldr_spline(lambdas)))
         
@@ -274,9 +290,30 @@ class GLOnet():
         sensor_signal= torch.abs(int_diff)/int_led
         return sensor_signal   
 
+    def sensor_signal_2(self, k, reflection_empty, reflection_full_A, reflection_full_B):
+        lambdas = 2 * math.pi / self.k
+        led_x_ldr = self.to_cuda_if_available(torch.from_numpy(self.led_spline(lambdas) * self.ldr_spline(lambdas)))
+        int_led = self.spectra_int(self.to_cuda_if_available(torch.from_numpy(self.led_spline(lambdas))), self.k, dim = 0)
+        signal_empty = torch.matmul(reflection_empty.squeeze(),torch.diag(led_x_ldr))
+        signal_empty_int = self.spectra_int(signal_empty, self.k, dim = 1)
+        signal_A = torch.matmul(reflection_full_A.squeeze(),torch.diag(led_x_ldr))
+        signal_A_int = self.spectra_int(signal_A, self.k, dim = 1)
+        if torch.all(reflection_full_B == 1):
+            print("Warning: reflection_full_B is all ones, using signal_empty for sensor_signal_2")
+            signal_diff = signal_empty_int - signal_A_int  # Igual a sensor_signal_1 en este caso
+        else:
+            signal_B = torch.matmul(reflection_full_B.squeeze(),torch.diag(led_x_ldr))
+            signal_B_int = self.spectra_int(signal_B, self.k, dim = 1)
+            signal_diff = (signal_empty_int - signal_A_int) * (signal_A_int - signal_B_int) * (signal_B_int - signal_empty_int) / (int_led **3)
+        #int_led = self.spectra_int(self.to_cuda_if_available(torch.from_numpy(self.led_spline(lambdas))), self.k, dim = 0)
+        #int_diff = self.spectra_int(signal_diff, self.k, dim = 1)
+        #sensor_signal= torch.abs(signal_diff)/int_led
+        sensor_signal= torch.abs(signal_diff)
+        return sensor_signal 
+
     def global_loss_function(self, signal):
-        return -torch.mean(torch.exp(-torch.mean(torch.pow(signal - self.target_reflection, 2), dim=(1,2,3))/self.sigma)) if not self.sensor else -torch.mean(torch.exp(-torch.pow(signal - 1, 2)/self.sigma))
-        
+        return -torch.mean(torch.exp(-torch.mean(torch.pow(signal - self.target_reflection, 2), dim=(1,2,3))/self.sigma)) if not self.sensor else -torch.mean(torch.exp(-torch.pow(signal - 0.25, 2)/self.sigma))
+   
     def global_loss_function_robust(self, reflection, thicknesses):
         metric = torch.mean(torch.pow(reflection - self.target_reflection, 2), dim=(1,2,3))
         dmdt = torch.autograd.grad(metric.mean(), thicknesses, create_graph=True)
