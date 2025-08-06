@@ -13,7 +13,8 @@ class Generator(nn.Module):
         self.M_materials = params.M_materials
         self.sensor = params.sensor
         if self.sensor:
-            self.n_database_full = params.n_database_full.view(1, 1, params.M_materials, -1) # 1 x 1 x number of mat x number of freq
+            self.n_database_full_A = params.n_database_full_A.view(1, 1, params.M_materials, -1) # 1 x 1 x number of mat x number of freq
+            self.n_database_full_B = params.n_database_full_B.view(1, 1, params.M_materials, -1) # 1 x 1 x number of mat x number of freq
             self.n_database_empty = params.n_database_empty.view(1, 1, params.M_materials, -1) # 1 x 1 x number of mat x number of freq
         else:
            self.n_database = params.n_database.view(1, 1, params.M_materials, -1) # 1 x 1 x number of mat x number of freq
@@ -33,9 +34,10 @@ class Generator(nn.Module):
         P = F.softmax(X * alpha, dim = 2).unsqueeze(-1) # batch size x number of layer x number of mat x 1
         
         if self.sensor:
-            refractive_indices_full = torch.sum(P * self.n_database_full, dim=2) # batch size x number of layer x number of freq
+            refractive_indices_full_A = torch.sum(P * self.n_database_full_A, dim=2) # batch size x number of layer x number of freq
+            refractive_indices_full_B = torch.sum(P * self.n_database_full_B, dim=2) # batch size x number of layer x number of freq
             refractive_indices_empty = torch.sum(P * self.n_database_empty, dim=2) # batch size x number of layer x number of freq
-            return (thicknesses, refractive_indices_empty, refractive_indices_full, P.squeeze())
+            return (thicknesses, refractive_indices_empty, refractive_indices_full_A, refractive_indices_full_B, P.squeeze())
         else:
             refractive_indices = torch.sum(P * self.n_database, dim=2) # batch size x number of layer x number of freq
             return (thicknesses, refractive_indices, P.squeeze())
@@ -81,7 +83,8 @@ class ResGenerator(nn.Module):
         self.M_materials = params.M_materials
         self.sensor = params.sensor
         if self.sensor:
-            self.n_database_full = params.n_database_full.view(1, 1, params.M_materials, -1) # 1 x 1 x number of mat x number of freq
+            self.n_database_full_A = params.n_database_full_A.view(1, 1, params.M_materials, -1) # 1 x 1 x number of mat x number of freq
+            self.n_database_full_B = params.n_database_full_B.view(1, 1, params.M_materials, -1) # 1 x 1 x number of mat x number of freq
             self.n_database_empty = params.n_database_empty.view(1, 1, params.M_materials, -1) # 1 x 1 x number of mat x number of freq
         else:
            self.n_database = params.n_database.view(1, 1, params.M_materials, -1) # 1 x 1 x number of mat x number of freq
@@ -122,9 +125,10 @@ class ResGenerator(nn.Module):
         P = F.softmax(X * alpha, dim = 2).unsqueeze(-1) # batch size x number of layer x number of mat x 1
         
         if self.sensor:
-            refractive_indices_full = torch.sum(P * self.n_database_full, dim=2) # batch size x number of layer x number of freq
+            refractive_indices_full_A = torch.sum(P * self.n_database_full_A, dim=2) # batch size x number of layer x number of freq
+            refractive_indices_full_B = torch.sum(P * self.n_database_full_B, dim=2) # batch size x number of layer x number of freq
             refractive_indices_empty = torch.sum(P * self.n_database_empty, dim=2) # batch size x number of layer x number of freq
-            return (thicknesses, refractive_indices_empty, refractive_indices_full, P.squeeze())
+            return (thicknesses, refractive_indices_empty, refractive_indices_full_A, refractive_indices_full_B, P.squeeze())
         else:
             refractive_indices = torch.sum(P * self.n_database, dim=2) # batch size x number of layer x number of freq
             return (thicknesses, refractive_indices, P.squeeze())
