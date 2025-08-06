@@ -147,3 +147,8 @@ dataset.zip
 fig/
 
 sensor/
+optuna_shapley_runs/
+materials/
+__materials/
+material_database/
+curvas indice de refraccion/
