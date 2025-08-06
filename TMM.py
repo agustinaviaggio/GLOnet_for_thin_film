@@ -146,18 +146,26 @@ def TMM_solver(thicknesses, refractive_indices, n_bot, n_top, k, theta, pol = 'T
     k = k.view(1, -1, 1, 1)
     ky = k * n_bot * torch.sin(theta.view(1, 1, -1, 1))
 
-    # transfer matrix calculation
-    T_stack = transfer_matrix_stack(thicknesses, refractive_indices, k, ky, pol)
-    
-    # amplitude to field convertion
-    A2F_bot = amp2field(n_bot, k, ky, pol)
-    A2F_top = amp2field(n_top, k, ky, pol)
-    
-    # S matrix
-    S_stack = torch.matmul(torch.inverse(A2F_top), torch.matmul(T_stack, A2F_bot))
-    
-    # reflection 
-    Reflection = torch.pow(torch.abs(S_stack[:,:,:,:,0,1]), 2) / torch.pow(torch.abs(S_stack[:,:,:,:,0,0]), 2)
-    Reflection = Reflection.double()
+    if not refractive_indices.numel() == 0:
+        # transfer matrix calculation
+        T_stack = transfer_matrix_stack(thicknesses, refractive_indices, k, ky, pol)
+        
+        # amplitude to field convertion
+        A2F_bot = amp2field(n_bot, k, ky, pol)
+        A2F_top = amp2field(n_top, k, ky, pol)
+        
+        # S matrix
+        S_stack = torch.matmul(torch.inverse(A2F_top), torch.matmul(T_stack, A2F_bot))
+        
+        # reflection 
+        Reflection = torch.pow(torch.abs(S_stack[:,:,:,:,0,1]), 2) / torch.pow(torch.abs(S_stack[:,:,:,:,0,0]), 2)
+        Reflection = Reflection.double()
+    else:
+        if pol in ['TM', 'TE']:
+            num_pol = 1
+        elif pol == 'both':
+            num_pol = 2
+        Reflection = torch.ones(thicknesses.size(0), k.size(1), len(theta), num_pol)
+        Reflection = Reflection.double()
             
     return Reflection
