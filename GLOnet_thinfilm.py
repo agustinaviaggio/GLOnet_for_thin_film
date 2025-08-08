@@ -32,14 +32,16 @@ class GLOnet():
         if params.sensor:
             self.sensor = True
         else:
-            self.sensor = False       
+            self.sensor = False
+        self.spectra = params.spectra
+    
         self._init_simulation_parameters(params)
         self.n_bot = self.to_cuda_if_available(params.n_bot)  # number of frequencies or 1
         self.n_top = self.to_cuda_if_available(params.n_top)  # number of frequencies or 1
         self.k = self.to_cuda_if_available(params.k)  # number of frequencies
         self.theta = self.to_cuda_if_available(params.theta) # number of angles       
         self.pol = params.pol # str of pol
-        self.target_reflection = self.to_cuda_if_available(params.target_reflection) if not self.sensor else None
+        self.target_spectra = self.to_cuda_if_available(params.target_spectra) if not self.sensor else None
         # 1 x number of frequencies x number of angles x (number of pol or 1)
 
         if self.sensor:
@@ -98,8 +100,8 @@ class GLOnet():
 
     def _create_spline(self, filename):
         df = pd.read_csv(filename, sep=';', decimal=',')
-        df.columns = ['Wavelength [nm]', 'Reflection spectra']
-        spline = UnivariateSpline(df['Wavelength [nm]'] / 1000, df['Reflection spectra'])
+        df.columns = ['Wavelength [nm]', 'Spectral response']
+        spline = UnivariateSpline(df['Wavelength [nm]'] / 1000, df['Spectral response'])
         spline.set_smoothing_factor(0.006)
         return spline
 
@@ -136,21 +138,24 @@ class GLOnet():
                     thicknesses, refractive_indices, _ = self.generator(z, self.alpha)
                 # calculate efficiencies and gradients using EM solver
                 if self.sensor:
-                    reflection_empty = TMM_solver(thicknesses, refractive_indices_empty, self.n_bot, self.n_top, self.k, self.theta, self.pol)
-                    reflection_full_A = TMM_solver(thicknesses, refractive_indices_full_A, self.n_bot, self.n_top, self.k, self.theta, self.pol)
-                    reflection_full_B = TMM_solver(thicknesses, refractive_indices_full_B, self.n_bot, self.n_top, self.k, self.theta, self.pol)
+                    reflection_empty, transmission_empty = TMM_solver(thicknesses, refractive_indices_empty, self.n_bot, self.n_top, self.k, self.theta, self.pol)
+                    reflection_full_A, transmission_full_A = TMM_solver(thicknesses, refractive_indices_full_A, self.n_bot, self.n_top, self.k, self.theta, self.pol)
+                    reflection_full_B, transmission_full_B = TMM_solver(thicknesses, refractive_indices_full_B, self.n_bot, self.n_top, self.k, self.theta, self.pol)
                 else:
-                    reflection = TMM_solver(thicknesses, refractive_indices, self.n_bot, self.n_top, self.k, self.theta, self.pol) 
+                    reflection, transmission = TMM_solver(thicknesses, refractive_indices, self.n_bot, self.n_top, self.k, self.theta, self.pol) 
                 
                 # free optimizer buffer 
                 self.optimizer.zero_grad()
 
-                # construct the loss 
-                sensor_signal = self.sensor_signal_2(self.k, reflection_empty, reflection_full_A, reflection_full_B) if self.sensor else None
-                
-                g_loss = self.global_loss_function(sensor_signal) if self.sensor else self.global_loss_function(reflection)
-
-                FM = torch.pow(sensor_signal - 0.25, 2) if self.sensor else torch.pow(reflection - self.target_reflection, 2)
+                # construct the loss
+                if self.spectra:
+                    sensor_signal = self.sensor_signal_2(self.k, reflection_empty, reflection_full_A, reflection_full_B) if self.sensor else None
+                    g_loss = self.global_loss_function(sensor_signal) if self.sensor else self.global_loss_function(reflection)
+                    FM = torch.pow(sensor_signal - 0.25, 2) if self.sensor else torch.pow(reflection - self.target_spectra, 2)
+                else:
+                    sensor_signal = self.sensor_signal_2(self.k, transmission_empty, transmission_full_A, transmission_full_B) if self.sensor else None
+                    g_loss = self.global_loss_function(sensor_signal) if self.sensor else self.global_loss_function(transmission)
+                    FM = torch.pow(sensor_signal - 0.25, 2) if self.sensor else torch.pow(transmission - self.target_spectra, 2)
                 # record history
                 self.record_history(it, g_loss, thicknesses, refractive_indices, FM) if not self.sensor else self.record_history(it, g_loss, thicknesses, refractive_indices_empty, FM)
                 
@@ -191,13 +196,15 @@ class GLOnet():
                     n_database_full_B = self.to_cuda_if_available(self.matdatabase_full_B.interp_wv(2 * math.pi/kvector, self.materials_full_B, False).unsqueeze(0).unsqueeze(0))
                     ref_idx_full_B = torch.sum(P.unsqueeze(-1) * n_database_full_B, dim=2)
             
-            reflection_empty = TMM_solver(thicknesses, ref_idx_empty, self.n_bot, self.n_top, self.to_cuda_if_available(kvector), self.to_cuda_if_available(inc_angles), pol)
-            reflection_full_A = TMM_solver(thicknesses, ref_idx_full_A, self.n_bot, self.n_top, self.to_cuda_if_available(kvector), self.to_cuda_if_available(inc_angles), pol)
-            reflection_full_B = TMM_solver(thicknesses, ref_idx_full_B, self.n_bot, self.n_top, self.to_cuda_if_available(kvector), self.to_cuda_if_available(inc_angles), pol)
+            reflection_empty, transmission_empty = TMM_solver(thicknesses, ref_idx_empty, self.n_bot, self.n_top, self.to_cuda_if_available(kvector), self.to_cuda_if_available(inc_angles), pol)
+            reflection_full_A, transmission_full_A = TMM_solver(thicknesses, ref_idx_full_A, self.n_bot, self.n_top, self.to_cuda_if_available(kvector), self.to_cuda_if_available(inc_angles), pol)
+            reflection_full_B, transmission_full_B = TMM_solver(thicknesses, ref_idx_full_B, self.n_bot, self.n_top, self.to_cuda_if_available(kvector), self.to_cuda_if_available(inc_angles), pol)
             
-            sensor_signal = self.sensor_signal_2(self.to_cuda_if_available(kvector), reflection_empty, reflection_full_A, reflection_full_B)
-            
-            return thicknesses, result_mat, sensor_signal, ref_idx_empty, reflection_empty, ref_idx_full_A, reflection_full_A, ref_idx_full_B, reflection_full_B
+            if self.spectra:
+                sensor_signal = self.sensor_signal_2(self.to_cuda_if_available(kvector), reflection_empty, reflection_full_A, reflection_full_B)
+            else:
+                sensor_signal = self.sensor_signal_2(self.to_cuda_if_available(kvector), transmission_empty, transmission_full_A, transmission_full_B)
+            return thicknesses, result_mat, sensor_signal, ref_idx_empty, reflection_empty, transmission_empty, ref_idx_full_A, reflection_full_A, reflection_full_A, ref_idx_full_B, reflection_full_B, reflection_full_B
         
         else:
             thicknesses, refractive_indices, P = self.generator(z, self.alpha)
@@ -217,8 +224,8 @@ class GLOnet():
                     n_database = self.matdatabase.interp_wv(2 * math.pi/kvector, self.materials, False).unsqueeze(0).unsqueeze(0).type(self.dtype)
                     ref_idx = torch.sum(P.unsqueeze(-1) * n_database, dim=2)
 
-            reflection = TMM_solver(thicknesses, ref_idx, self.n_bot, self.n_top, kvector.type(self.dtype), inc_angles.type(self.dtype), pol)
-            return (thicknesses, ref_idx, result_mat, reflection)
+            reflection, transmission = TMM_solver(thicknesses, ref_idx, self.n_bot, self.n_top, kvector.type(self.dtype), inc_angles.type(self.dtype), pol)
+            return (thicknesses, ref_idx, result_mat, reflection, transmission)
       
     def _calculate_refractive_indices(self, result_mat, kvector):
         if self.user_define:
@@ -251,10 +258,10 @@ class GLOnet():
             ref_idx_empty = torch.sum(one_hot_mat * n_database_empty, dim=2)
             ref_idx_full_A = torch.sum(one_hot_mat * n_database_full_A, dim=2)
             ref_idx_full_B = torch.sum(one_hot_mat * n_database_full_B, dim=2)
-            reflection_e = TMM_solver(thicknesses, ref_idx_empty, self.n_bot, self.n_top, kvector, inc_angles, pol)
-            reflection_f_A = TMM_solver(thicknesses, ref_idx_full_A, self.n_bot, self.n_top, kvector, inc_angles, pol)
-            reflection_f_B = TMM_solver(thicknesses, ref_idx_full_B, self.n_bot, self.n_top, kvector, inc_angles, pol)
-            return reflection_e, reflection_f_A, reflection_f_B
+            reflection_e, transmission_e = TMM_solver(thicknesses, ref_idx_empty, self.n_bot, self.n_top, kvector, inc_angles, pol)
+            reflection_f_A , transmission_f_A= TMM_solver(thicknesses, ref_idx_full_A, self.n_bot, self.n_top, kvector, inc_angles, pol)
+            reflection_f_B, transmission_f_B = TMM_solver(thicknesses, ref_idx_full_B, self.n_bot, self.n_top, kvector, inc_angles, pol)
+            return reflection_e, reflection_f_A, reflection_f_B, transmission_e, transmission_f_A, transmission_f_B
         else:
             if kvector is None:
                 kvector = self.k
@@ -265,8 +272,8 @@ class GLOnet():
             n_database = self.matdatabase.interp_wv(2 * math.pi/kvector, self.materials, False).unsqueeze(0).unsqueeze(0)
             one_hot = torch.eye(len(self.materials)).type(self.dtype)
             ref_idx = torch.sum(one_hot[result_mat].unsqueeze(-1) * n_database, dim=2)
-            reflection = TMM_solver(thicknesses, ref_idx, self.n_bot, self.n_top, kvector.type(self.dtype), inc_angles, pol)
-            return reflection            
+            reflection, transmission = TMM_solver(thicknesses, ref_idx, self.n_bot, self.n_top, kvector.type(self.dtype), inc_angles, pol)
+            return reflection, transmission            
         
     def update_alpha(self, normIter):
         self.alpha = round(normIter/0.05) * self.alpha_sup + 1.
@@ -278,31 +285,31 @@ class GLOnet():
         lambdas = 2*math.pi/self.k
         return torch.trapz(spectra, lambdas, dim= dim)
     
-    def sensor_signal_1(self, k, reflection_empty, reflection_full):
+    def sensor_signal_1(self, k, spectra_empty, spectra_full):
         lambdas = 2 * math.pi / self.k
         led_x_ldr = self.to_cuda_if_available(torch.from_numpy(self.led_spline(lambdas) * self.ldr_spline(lambdas)))
         
-        signal_empty = torch.matmul(reflection_empty.squeeze(),torch.diag(led_x_ldr))
-        signal_full = torch.matmul(reflection_full.squeeze(),torch.diag(led_x_ldr))
+        signal_empty = torch.matmul(spectra_empty.squeeze(),torch.diag(led_x_ldr))
+        signal_full = torch.matmul(spectra_full.squeeze(),torch.diag(led_x_ldr))
         signal_diff = signal_empty - signal_full
         int_led = self.spectra_int(self.to_cuda_if_available(torch.from_numpy(self.led_spline(lambdas))), self.k, dim = 0)
         int_diff = self.spectra_int(signal_diff, self.k, dim = 1)
         sensor_signal= torch.abs(int_diff)/int_led
         return sensor_signal   
 
-    def sensor_signal_2(self, k, reflection_empty, reflection_full_A, reflection_full_B):
+    def sensor_signal_2(self, k, spectra_empty, spectra_full_A, spectra_full_B):
         lambdas = 2 * math.pi / self.k
         led_x_ldr = self.to_cuda_if_available(torch.from_numpy(self.led_spline(lambdas) * self.ldr_spline(lambdas)))
         int_led = self.spectra_int(self.to_cuda_if_available(torch.from_numpy(self.led_spline(lambdas))), self.k, dim = 0)
-        signal_empty = torch.matmul(reflection_empty.squeeze(),torch.diag(led_x_ldr))
+        signal_empty = torch.matmul(spectra_empty.squeeze(),torch.diag(led_x_ldr))
         signal_empty_int = self.spectra_int(signal_empty, self.k, dim = 1)
-        signal_A = torch.matmul(reflection_full_A.squeeze(),torch.diag(led_x_ldr))
+        signal_A = torch.matmul(spectra_full_A.squeeze(),torch.diag(led_x_ldr))
         signal_A_int = self.spectra_int(signal_A, self.k, dim = 1)
-        if torch.all(reflection_full_B == 1):
-            print("Warning: reflection_full_B is all ones, using signal_empty for sensor_signal_2")
+        if torch.all(spectra_full_B == 1):
+            print("Warning: spectra_full_B is all ones, using signal_empty for sensor_signal_2")
             signal_diff = signal_empty_int - signal_A_int  # Igual a sensor_signal_1 en este caso
         else:
-            signal_B = torch.matmul(reflection_full_B.squeeze(),torch.diag(led_x_ldr))
+            signal_B = torch.matmul(spectra_full_B.squeeze(),torch.diag(led_x_ldr))
             signal_B_int = self.spectra_int(signal_B, self.k, dim = 1)
             signal_diff = (signal_empty_int - signal_A_int) * (signal_A_int - signal_B_int) * (signal_B_int - signal_empty_int) / (int_led **3)
         #int_led = self.spectra_int(self.to_cuda_if_available(torch.from_numpy(self.led_spline(lambdas))), self.k, dim = 0)
@@ -312,10 +319,10 @@ class GLOnet():
         return sensor_signal 
 
     def global_loss_function(self, signal):
-        return -torch.mean(torch.exp(-torch.mean(torch.pow(signal - self.target_reflection, 2), dim=(1,2,3))/self.sigma)) if not self.sensor else -torch.mean(torch.exp(-torch.pow(signal - 0.25, 2)/self.sigma))
+        return -torch.mean(torch.exp(-torch.mean(torch.pow(signal - self.target_spectra, 2), dim=(1,2,3))/self.sigma)) if not self.sensor else -torch.mean(torch.exp(-torch.pow(signal - 0.25, 2)/self.sigma))
    
-    def global_loss_function_robust(self, reflection, thicknesses):
-        metric = torch.mean(torch.pow(reflection - self.target_reflection, 2), dim=(1,2,3))
+    def global_loss_function_robust(self, spectra, thicknesses):
+        metric = torch.mean(torch.pow(spectra - self.target_spectra, 2), dim=(1,2,3))
         dmdt = torch.autograd.grad(metric.mean(), thicknesses, create_graph=True)
         return -torch.mean(torch.exp((-metric - self.robust_coeff *torch.mean(torch.abs(dmdt[0]), dim=1))/self.sigma))
 
