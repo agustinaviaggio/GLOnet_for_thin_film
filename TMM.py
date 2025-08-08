@@ -160,6 +160,8 @@ def TMM_solver(thicknesses, refractive_indices, n_bot, n_top, k, theta, pol = 'T
         # reflection 
         Reflection = torch.pow(torch.abs(S_stack[:,:,:,:,0,1]), 2) / torch.pow(torch.abs(S_stack[:,:,:,:,0,0]), 2)
         Reflection = Reflection.double()
+        Transmission = torch.pow(torch.det(S_stack), 2) / torch.pow(torch.abs(S_stack[:,:,:,:,0,0]), 2)
+        Transmission = Transmission.double()
     else:
         if pol in ['TM', 'TE']:
             num_pol = 1
@@ -167,5 +169,7 @@ def TMM_solver(thicknesses, refractive_indices, n_bot, n_top, k, theta, pol = 'T
             num_pol = 2
         Reflection = torch.ones(thicknesses.size(0), k.size(1), len(theta), num_pol)
         Reflection = Reflection.double()
+        Transmission = torch.ones(thicknesses.size(0), k.size(1), len(theta), num_pol)
+        Transmission = Transmission.double()
             
-    return Reflection
+    return Reflection, Transmission
